@@ -64,7 +64,6 @@ async def img(m: types.Message):
                     await msg.delete()
                     await m.answer_photo(res["output"][0], caption=prompt)
                     break
-break
                 if res["status"] in ["failed", "canceled"]:
                     await msg.edit_text("Ошибка")
                     break
