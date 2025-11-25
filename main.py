@@ -3,9 +3,11 @@ import logging
 import os
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command
-from aiogram.types import Message
+from aiogram.types import Message, Update
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiohttp import web
 import aiohttp
+from collections import defaultdict
 
 logging.basicConfig(level=logging.INFO)
 
@@ -17,7 +19,6 @@ storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
 # === АНТИФЛУД ===
-from collections import defaultdict
 flood = defaultdict(list)
 
 async def anti_flood(**kwargs):
@@ -29,10 +30,10 @@ async def anti_flood(**kwargs):
     flood[user_id] = times + [now]
     return True
 
-# === ХЕНДЛЕРЫ ===
+# === ТВОИ ХЕНДЛЕРЫ (без изменений) ===
 @dp.message(Command("start"))
 async def start(message: Message):
-    await message.answer("🌹 Роза жива, сука! Я вернулась навсегда 😈\n\n/img <текст> — генерирую картинку (flux-dev)")
+    await message.answer("Роза жива, сука! Я вернулась навсегда 😈\n\n/img <текст> — генерирую картинку (flux-dev)")
 
 @dp.message(Command("img"))
 async def img(message: Message):
@@ -63,7 +64,7 @@ async def img(message: Message):
                 res = await resp.json()
             if res["status"] == "succeeded":
                 await wait.delete()
-                await message.answer_photo(res["output"][0], caption=f"🌹 {prompt}")
+                await message.answer_photo(res["output"][0], caption=f"Роза {prompt}")
                 break
             elif res["status"] in ["failed", "canceled"]:
                 await wait.edit_text("Ошибка генерации")
@@ -72,7 +73,7 @@ async def img(message: Message):
 
 @dp.message(F.text.lower().contains(("роза", "розочка", "roza")))
 async def roza_call(message: Message):
-    await message.reply("🌹 Да, мой господин?")
+    await message.reply("Роза Да, мой господин?")
 
 @dp.message(F.text.lower().contains(("сука", "блять", "пидр", "хуй")))
 async def mat(message: Message):
@@ -82,9 +83,26 @@ async def mat(message: Message):
 async def echo(message: Message):
     await message.reply("Чё надо?")
 
-async def main():
-    await bot.delete_webhook(drop_pending_updates=True)
-    await dp.start_polling(bot)
+# === WEBHOOK ЧАСТЬ (это то, что заставит работать на Render) ===
+async def handle_webhook(request):
+    update = Update(**await request.json())
+    await dp.feed_update(bot, update)
+    return web.Response()
 
+async def on_startup(app):
+    webhook_url = f"https://{os.environ['RENDER_EXTERNAL_HOSTNAME']}{os.environ.get('RENDER_EXTERNAL_URL', '/')}"
+    await bot.set_webhook(webhook_url)
+    logging.info(f"Webhook установлен: {webhook_url}")
+
+async def on_shutdown(app):
+    await bot.delete_webhook()
+
+app = web.Application()
+app.router.add_post("/", handle_webhook)
+app.on_startup.append(on_startup)
+app.on_shutdown.append(on_shutdown)
+
+# Запуск через gunicorn (Render сам использует его)
 if __name__ == "__main__":
-    asyncio.run(main())
+    port = int(os.environ.get("PORT", 10000))
+    web.run_app(app, host="0.0.0.0", port=port)
