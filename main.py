@@ -1,43 +1,46 @@
-import asyncio
-import logging
 import os
-from aiogram import Bot, Dispatcher, F
-from aiogram.filters import Command
-from aiogram.types import Message, Update
-from aiogram.fsm.storage.memory import MemoryStorage
-from aiohttp import web
-import aiohttp
+import logging
+import asyncio
 from collections import defaultdict
+from aiohttp import web
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+from aiogram.types import Update
+from aiogram.client.default import DefaultBotProperties
+import aiohttp
 
 logging.basicConfig(level=logging.INFO)
 
 TOKEN = os.getenv("BOT_TOKEN")
 REPLICATE_TOKEN = os.getenv("REPLICATE_TOKEN", "")
 
-from aiogram.client.default import DefaultBotProperties
+if not TOKEN:
+    raise SystemExit("BOT_TOKEN не найден!")
+
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
-storage = MemoryStorage()
-dp = Dispatcher(storage=storage)
+dp = Dispatcher()
 
-# === АНТИФЛУД ===
+# === Антифлуд ===
 flood = defaultdict(list)
+async def antiflood_middleware(handler, event: types.Update, data):
+    if event.message:
+        user_id = event.message.from_user.id
+        now = asyncio.get_event_loop().time()
+        times = [t for t in flood[user_id] if now - t < 2]
+        if len(times) >= 4:
+            return
+        flood[user_id] = times + [now]
+    return await handler(event, data)
 
-async def anti_flood(**kwargs):
-    user_id = kwargs["update"].message.from_user.id
-    now = asyncio.get_event_loop().time()
-    times = [t for t in flood[user_id] if now - t < 2]
-    if len(times) >= 4:
-        return False
-    flood[user_id] = times + [now]
-    return True
+dp.message.middleware(antiflood_middleware)
 
-# === ТВОИ ХЕНДЛЕРЫ (без изменений) ===
+# === Твои хендлеры (без изменений) ===
 @dp.message(Command("start"))
-async def start(message: Message):
+async def start(message: types.Message):
     await message.answer("Роза жива, сука! Я вернулась навсегда 😈\n\n/img <текст> — генерирую картинку (flux-dev)")
 
 @dp.message(Command("img"))
-async def img(message: Message):
+async def img(message: types.Message):
     if not REPLICATE_TOKEN:
         await message.answer("Генерация отключена — нет REPLICATE_TOKEN")
         return
@@ -72,38 +75,34 @@ async def img(message: Message):
                 break
             await asyncio.sleep(3)
 
-@dp.message(F.text.lower().contains(("роза", "розочка", "roza")))
-async def roza_call(message: Message):
+@dp.message(lambda m: m.text and any(w in m.text.lower() for w in ["роза", "розочка", "roza"]))
+async def roza_call(message: types.Message):
     await message.reply("Роза Да, мой господин?")
 
-@dp.message(F.text.lower().contains(("сука", "блять", "пидр", "хуй")))
-async def mat(message: Message):
-    await message.reply("Сам такой 😏")
+@dp.message(lambda m: m.text and any(w in m.text.lower() for w in ["сука", "блять", "пидр","хуй"]))
+async def mat(message: types.Message):
+    await message.reply("Сам такой")
 
 @dp.message()
-async def echo(message: Message):
+async def echo(message: types.Message):
     await message.reply("Чё надо?")
 
-# === WEBHOOK ЧАСТЬ (это то, что заставит работать на Render) ===
+# === ИСПРАВЛЕННЫЙ WEBHOOK ===
 async def handle_webhook(request):
     update = Update(**await request.json())
     await dp.feed_update(bot, update)
-    return web.Response()
+    return web.Response(text="OK")
 
-async def on_startup(app):
-    webhook_url = f"https://{os.environ['RENDER_EXTERNAL_HOSTNAME']}{os.environ.get('RENDER_EXTERNAL_URL', '/')}"
+async def on_startup(_):
+    # Правильный URL на Render
+    webhook_url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/webhook"
     await bot.set_webhook(webhook_url)
-    logging.info(f"Webhook установлен: {webhook_url}")
-
-async def on_shutdown(app):
-    await bot.delete_webhook()
+    logging.info(f"Webhook успешно установлен: {webhook_url}")
 
 app = web.Application()
-app.router.add_post("/", handle_webhook)
+app.router.add_post("/webhook", handle_webhook)   # ← вот тут было "/" → теперь "/webhook"
 app.on_startup.append(on_startup)
-app.on_shutdown.append(on_shutdown)
 
-# Запуск через gunicorn (Render сам использует его)
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    web.run_app(app, host="0.0.0.0", port=port) 
+    port = int(os.getenv("PORT", 10000))
+    web.run_app(app, host="0.0.0.0", port=port)
