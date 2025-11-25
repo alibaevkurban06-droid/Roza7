@@ -9,116 +9,94 @@ from aiogram.types import Update
 from aiogram.client.default import DefaultBotProperties
 import aiohttp
 
-# ====================== НАСТРОЙКИ ======================
 logging.basicConfig(level=logging.INFO)
 
 TOKEN = os.getenv("BOT_TOKEN")
 REPLICATE_TOKEN = os.getenv("REPLICATE_TOKEN", "")
 
 if not TOKEN:
-    raise SystemExit("Ошибка: BOT_TOKEN не задан в переменных окружения!")
+    raise SystemExit("BOT_TOKEN не найден!")
 
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
 
-# ====================== АНТИФЛУД (ИСПРАВЛЕННЫЙ) ======================
+# Антифлуд
 flood = defaultdict(list)
 
-async def antiflood_middleware(handler, event: types.Update, data: dict):
+async def antiflood(handler, event: types.Update, data):
     if event.message:
-        user_id = event.message.from_user.id
+        uid = event.message.from_user.id
         now = asyncio.get_event_loop().time()
-        # оставляем только сообщения за последние 2 секунды
-        times = [t for t in flood[user_id] if now - t < 2]
-        if len(times) >= 4:
-            await event.message.answer("Не спамь, сука")
-            return  # просто блокируем, не падаем
-        flood[user_id] = times + [now]
+        flood[uid] = [t for t in flood[uid] if now - t < 2]
+        if len(flood[uid]) >= 4:
+            await event.message.answer("Не спамь")
+            return
+        flood[uid].append(now)
     return await handler(event, data)
 
-dp.message.middleware(antiflood_middleware)
+dp.message.middleware(antiflood)
 
-# ====================== ХЕНДЛЕРЫ ======================
+# Хендлеры
 @dp.message(Command("start"))
-async def start(message: types.Message):
-    await message.answer(
-        "Роза жива, сука! Я вернулась навсегда\n\n"
-        "/img <твой промпт> — генерирую картинку через Flux-dev\n"
-        "Просто пиши мне что угодно — я всегда отвечу"
-    )
+async def start(m: types.Message):
+    await m.answer("Роза жива! Я вернулась навсегда\n\n/img <промпт> — картинка")
 
 @dp.message(Command("img"))
-async def img(message: types.Message):
+async def img(m: types.Message):
     if not REPLICATE_TOKEN:
-        await message.answer("Генерация выключена — нет REPLICATE_TOKEN")
+        await m.answer("Генерация выключена")
         return
-
-    prompt = message.text[len("/img"):].strip()
-    if not prompt:
-        await message.answer("Пиши промпт после команды, долбоёб")
-        return
-
-    wait = await message.answer("Генерирую, жди 10–30 сек…")
-
+    prompt = m.text.partition(" ")[2] or "рыжеволосая девушка с тату и кофе"
+    msg = await m.answer("Генерирую…")
     try:
-        async with aiohttp.ClientSession() as session:
-            # создаём задачу
-            async with session.post(
-                "https://api.replicate.com/v1/predictions",
-                headers={"Authorization": f"Token {REPLICATE_TOKEN}"},
-                json={
-                    "version": "c221b2b8ef527988fb59bf24a8b97c0329f37ff2f90d4d2cfe46bd29d30f86d9",
-                    "input": {"prompt": prompt}
-                }
-            ) as resp:
-                data = await resp.json()
-
-            if "id" not in data:
-                await wait.edit_text("Ошибка запуска генерации")
-                return
-
-            pred_id = data["id"]
-
-            # опрашиваем статус
+        async with aiohttp.ClientSession() as s:
+            async with s.post("https://api.replicate.com/v1/predictions", headers={"Authorization": f"Token {REPLICATE_TOKEN}"}, json={
+                "version": "c221b2b8ef527988fb59bf24a8b97c0329f37ff2f90d4d2cfe46bd29d30f86d9",
+                "input": {"prompt": prompt}
+            }) as r:
+                data = await r.json()
+            pid = data["id"]
             while True:
                 await asyncio.sleep(3)
-                async with session.get(
-                    f"https://api.replicate.com/v1/predictions/{pred_id}",
-                    headers={"Authorization": f"Token {REPLICATE_TOKEN}"}
-                ) as resp:
-                    result = await resp.json()
-
-                if result["status"] == "succeeded":
-                    await wait.delete()
-                    await message.answer_photo(result["output"][0], caption=f"{prompt}")
+                async with s.get(f"https://api.replicate.com/v1/predictions/{pid}", headers={"Authorization": f"Token {REPLICATE_TOKEN}"}) as r:
+                    res = await r.json()
+                if res["status"] == "succeeded":
+                    await msg.delete()
+                    await m.answer_photo(res["output"][0], caption=prompt)
                     break
-                elif result["status"] in ["failed", "canceled"]:
-                    await wait.edit_text("Генерация упала")
+break
+                if res["status"] in ["failed", "canceled"]:
+                    await msg.edit_text("Ошибка")
                     break
+    except:
+        await msg.edit_text("Что-то сломалось")
 
-    except Exception as e:
-        logging.error(e)
-        await wait.edit_text("Что-то пошло не так с Replicate")
+@dp.message(lambda m: m.text and ("роза" in m.text.lower() or "roza" in m.text.lower()))
+async def call(m: types.Message):
+    await m.reply("Роза Да, мой?")
 
-# реакции на имя
-@dp.message(lambda m: m.text and any(word in m.text.lower() for word in ["роза", "розочка", "roza"]))
-async def call_roza(message: types.Message):
-    await message.reply("Роза Да, мой господин?")
+@dp.message(lambda m: m.text and any(w in m.text.lower() for w in ["сука","блять","пидр","хуй"]))
+async def mat(m: types.Message):
+    await m.reply("Сам такой")
 
-# мат-фильтр
-@dp.message(lambda m: m.text and any(word in m.text.lower() for word in ["сука", "блять", "пидр", "хуй", "бля"]))
-async def mat_filter(message: types.Message):
-    await message.reply("Сам такой")
-
-# всё остальное
 @dp.message()
-async def echo(message: types.Message):
-    await message.reply("Чё надо?")
+async def echo(m: types.Message):
+    await m.reply("Чё надо?")
 
-# ====================== WEBHOOK ======================
-async def handle_webhook(request):
+# Webhook
+async def handler(request):
     update = Update(**await request.json())
     await dp.feed_update(bot, update)
     return web.Response(text="OK")
 
 async def on_startup(_):
+    url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/webhook"
+    await bot.set_webhook(url)
+    logging.info(f"Webhook: {url}")
+
+app = web.Application()
+app.router.add_post("/webhook", handler)
+app.on_startup.append(on_startup)
+
+if __name__ == "__main__":
+    web.run_app(app, host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
