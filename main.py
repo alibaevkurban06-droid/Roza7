@@ -20,21 +20,8 @@ if not TOKEN:
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
 
-# Антифлуд
+# Упрощённый антифлуд без middleware (чтобы не падать)
 flood = defaultdict(list)
-
-async def antiflood(handler, event: types.Update, data):
-    if event.message:
-        uid = event.message.from_user.id
-        now = asyncio.get_event_loop().time()
-        flood[uid] = [t for t in flood[uid] if now - t < 2]
-        if len(flood[uid]) >= 4:
-            await event.message.answer("Не спамь")
-            return
-        flood[uid].append(now)
-    return await handler(event, data)
-
-dp.message.middleware(antiflood)
 
 # Хендлеры
 @dp.message(Command("start"))
@@ -67,7 +54,8 @@ async def img(m: types.Message):
                 if res["status"] in ["failed", "canceled"]:
                     await msg.edit_text("Ошибка")
                     break
-    except:
+    except Exception as e:
+        logging.error(e)
         await msg.edit_text("Что-то сломалось")
 
 @dp.message(lambda m: m.text and ("роза" in m.text.lower() or "roza" in m.text.lower()))
@@ -80,22 +68,30 @@ async def mat(m: types.Message):
 
 @dp.message()
 async def echo(m: types.Message):
+    # Антифлуд здесь
+    uid = m.from_user.id
+    now = asyncio.get_event_loop().time()
+    flood[uid] = [t for t in flood[uid] if now - t < 2]
+    if len(flood[uid]) >= 4:
+        await m.reply("Не спамь")
+        return
+    flood[uid].append(now)
     await m.reply("Чё надо?")
 
-# Webhook
-async def handler(request):
-    update = Update(**await request.json())
-    await dp.feed_update(bot, update)
-    return web.Response(text="OK")
-
-async def on_startup(_):
-    url = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/webhook"
-    await bot.set_webhook(url)
-    logging.info(f"Webhook: {url}")
+# Webhook хэндлер
+async def webhook_handler(request):
+    try:
+        update = Update(**await request.json())
+        await dp.feed_update(bot, update)
+        return web.Response(text="OK")
+    except Exception as e:
+        logging.error(e)
+        return web.Response(status=500, text="Error")
 
 app = web.Application()
-app.router.add_post("/webhook", handler)
-app.on_startup.append(on_startup)
+app.router.add_post("/webhook", webhook_handler)
 
+# Запуск
 if __name__ == "__main__":
-    web.run_app(app, host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+    port = int(os.getenv("PORT", 10000))
+    web.run_app(app, host="0.0.0.0", port=port)
